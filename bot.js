@@ -70,8 +70,25 @@ async function getUserActiveKeys(userId, discordTag) {
     ]);
 
     const keys = new Set();
+    const batch = db.batch();
+    let batchCount = 0;
+
     snapshotId.forEach(doc => keys.add(doc.id));
-    snapshotTag.forEach(doc => keys.add(doc.id));
+
+    snapshotTag.forEach(doc => {
+        keys.add(doc.id);
+        const data = doc.data();
+        // Auto-migration: If key found by tag but missing userId, add userId.
+        if (!data.userId) {
+            batch.update(doc.ref, { userId: userId });
+            batchCount++;
+        }
+    });
+
+    if (batchCount > 0) {
+        // Run migration in background without blocking return
+        batch.commit().catch(e => console.error("Auto-migration failed:", e));
+    }
 
     const result = Array.from(keys);
 
