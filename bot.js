@@ -57,20 +57,20 @@ function generateKey() {
 }
 
 // Helper: dapatkan key aktif user dari cache atau Firestore
-async function getUserActiveKeys(discordTag) {
-    const cached = userKeyCache.get(discordTag);
+async function getUserActiveKeys(userId) {
+    const cached = userKeyCache.get(userId);
     if (cached && cached.expires > Date.now()) {
         return cached.keys;
     }
 
     const snapshot = await db.collection('keys')
-        .where('usedByDiscord', '==', discordTag)
+        .where('userId', '==', userId)
         .get();
 
     const keys = [];
     snapshot.forEach(doc => keys.push(doc.id));
 
-    userKeyCache.set(discordTag, {
+    userKeyCache.set(userId, {
         keys,
         expires: Date.now() + 120000 // 2 menit
     });
@@ -92,11 +92,11 @@ async function logAction(title, executorTag, target, action, extra = "") {
         )
         .setColor(
             /Redeem/i.test(action) ? "#00ffff" :
-            /Reset/i.test(action) ? "#ffa500" :
-            /Script/i.test(action) ? "#ff00ff" :
-            /Role/i.test(action) ? "#ffff00" :
-            /Add/i.test(action) ? "#00ff00" :
-            "#ff0000"
+                /Reset/i.test(action) ? "#ffa500" :
+                    /Script/i.test(action) ? "#ff00ff" :
+                        /Role/i.test(action) ? "#ffff00" :
+                            /Add/i.test(action) ? "#00ff00" :
+                                "#ff0000"
         )
         .setTimestamp();
 
@@ -116,24 +116,24 @@ async function safeReply(interaction, opts) {
         return await interaction.followUp(Object.assign({ ephemeral: true }, options));
     } catch (err) {
         console.error('Reply error:', err);
-        try { await interaction.followUp({ content: 'Terjadi error saat mengirim pesan.', ephemeral: true }); } catch (e) {}
+        try { await interaction.followUp({ content: 'Terjadi error saat mengirim pesan.', ephemeral: true }); } catch (e) { }
     }
 }
 
 // Global error handlers
 process.on('unhandledRejection', (reason, p) => {
     console.error('Unhandled Rejection at:', p, 'reason:', reason);
-    if (webhook) webhook.send({ content: `Unhandled Rejection: ${String(reason)}` }).catch(() => {});
+    if (webhook) webhook.send({ content: `Unhandled Rejection: ${String(reason)}` }).catch(() => { });
 });
 process.on('uncaughtException', (err) => {
     console.error('Uncaught Exception:', err);
-    if (webhook) webhook.send({ content: `Uncaught Exception: ${err.message}` }).catch(() => {});
+    if (webhook) webhook.send({ content: `Uncaught Exception: ${err.message}` }).catch(() => { });
 });
 
 client.on('error', (err) => console.error('Client error:', err));
 client.on('shardError', (err) => console.error('Shard error:', err));
 
-client.once('ready', async () => { 
+client.once('ready', async () => {
     console.log(`Bot ${client.user.tag} online & optimized!`);
     client.user.setActivity('Vorahub On Top', { type: 4 });
 
@@ -189,7 +189,7 @@ client.on('interactionCreate', async (interaction) => {
                 batch.set(db.collection('keys').doc(newKey), {
                     used: false,
                     alreadyRedeem: true,
-                    usedByDiscord: targetTag,
+                    userId: targetUser.id,
                     hwid: "",
                     usedAt: admin.firestore.FieldValue.serverTimestamp(),
                     expiresAt: null,
@@ -262,7 +262,7 @@ client.on('interactionCreate', async (interaction) => {
             const now = Date.now();
             const userCooldown = cooldowns.get(userId);
             if (userCooldown && now < userCooldown) {
-                return interaction.reply({ content: `Tunggu ${Math.ceil((userCooldown - now)/1000)} detik sebelum pakai lagi!`, ephemeral: true });
+                return interaction.reply({ content: `Tunggu ${Math.ceil((userCooldown - now) / 1000)} detik sebelum pakai lagi!`, ephemeral: true });
             }
             cooldowns.set(userId, now + 5000);
 
@@ -294,7 +294,7 @@ client.on('interactionCreate', async (interaction) => {
 
                 const activeDoc = await db.collection('keys').doc(inputKey).get();
                 if (activeDoc.exists) {
-                    return interaction.editReply({ content: `Key sudah dipakai oleh **${activeDoc.data().usedByDiscord || "Unknown"}**!` });
+                    return interaction.editReply({ content: `Key sudah dipakai oleh **${activeDoc.data().userId || "Unknown"}**!` });
                 }
 
                 const pendingDoc = await db.collection('generated_keys').doc(inputKey).get();
@@ -309,7 +309,7 @@ client.on('interactionCreate', async (interaction) => {
                 batch.set(db.collection('keys').doc(inputKey), {
                     used: false,
                     alreadyRedeem: true,
-                    usedByDiscord: discordTag,
+                    userId: userId,
                     hwid: "",
                     usedAt: admin.firestore.FieldValue.serverTimestamp(),
                     expiresAt: isPermanent ? null : admin.firestore.Timestamp.fromMillis(Date.now() + (pendingData.expiresInDays * 86400000)),
@@ -329,7 +329,7 @@ client.on('interactionCreate', async (interaction) => {
                     }
                 }
 
-                userKeyCache.delete(discordTag); // invalidate cache
+                userKeyCache.delete(userId); // invalidate cache
                 return interaction.editReply({
                     content: `Key \`${inputKey}\` berhasil diredeem!\nKamu sekarang bisa pakai semua fitur panel.\nRole Premium otomatis diberikan jika kamu di server.`
                 });
@@ -339,7 +339,7 @@ client.on('interactionCreate', async (interaction) => {
             if (interaction.customId === "getrole_start") {
                 await interaction.deferReply({ ephemeral: true });
                 if (!interaction.guild) return interaction.editReply({ content: "Fitur ini hanya bisa dipakai di server." });
-                const keys = await getUserActiveKeys(discordTag);
+                const keys = await getUserActiveKeys(userId);
                 if (keys.length === 0) return interaction.editReply({ content: "Kamu belum punya key aktif!" });
 
                 const member = await interaction.guild.members.fetch(userId).catch(() => null);
@@ -356,7 +356,7 @@ client.on('interactionCreate', async (interaction) => {
             // Get Script
             if (interaction.customId === "getscript_start") {
                 await interaction.deferReply({ ephemeral: true });
-                const keys = await getUserActiveKeys(discordTag);
+                const keys = await getUserActiveKeys(userId);
                 if (keys.length === 0) return interaction.editReply({ content: "Kamu belum punya key aktif!" });
 
                 if (keys.length === 1) {
@@ -390,7 +390,7 @@ client.on('interactionCreate', async (interaction) => {
             // Reset HWID
             if (interaction.customId === "reset_start") {
                 await interaction.deferReply({ ephemeral: true });
-                const keys = await getUserActiveKeys(discordTag);
+                const keys = await getUserActiveKeys(userId);
                 if (keys.length === 0) return interaction.editReply({ content: "Kamu belum punya key aktif!" });
 
                 if (keys.length === 1) {
@@ -432,100 +432,100 @@ client.on('messageCreate', async (msg) => {
         const args = msg.content.slice(PREFIX.length).trim().split(/ +/);
         const cmd = args.shift()?.toLowerCase();
 
-    if (!msg.member?.roles.cache.has(STAFF_ROLE_ID)) {
-        return msg.reply("Hanya staff dengan role khusus!");
-    }
-
-    if (cmd === "panel") {
-        const embed = new EmbedBuilder()
-            .setTitle("Vorahub Premium Panel")
-            .setDescription("This panel is for the project: Vorahub \n\nIf you're a buyer, click on the buttons below to redeem your key, get the script or get your role")
-            .setColor("#7289da")
-            .setThumbnail(client.user.displayAvatarURL())
-            .setTimestamp();
-
-        const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId("redeem_modal").setLabel("Redeem Key").setStyle(ButtonStyle.Primary),
-            new ButtonBuilder().setCustomId("reset_start").setLabel("Reset HWID").setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId("getscript_start").setLabel("Get Script").setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId("getrole_start").setLabel("Get Role").setStyle(ButtonStyle.Danger)
-        );
-
-        const panelMsg = await msg.channel.send({ embeds: [embed], components: [row] });
-        latestPanelMessageId = panelMsg.id;
-        latestPanelChannelId = msg.channel.id;
-
-        const confirm = await msg.reply("Panel berhasil dibuat!");
-        setTimeout(() => confirm.delete().catch(() => {}), 5000);
-        return;
-    }
-
-    if (cmd === "gen" || cmd === "generate") {
-        let jumlah = 1;
-        let hari = null;
-        let targetUser = msg.mentions.users.first();
-
-        if (args[0]) jumlah = Math.min(parseInt(args[0]) || 1, 100);
-        if (args[1] && !isNaN(args[1])) hari = parseInt(args[1]);
-
-        const isPermanent = hari === null || hari <= 0;
-
-        const batch = db.batch();
-        const keys = [];
-
-        for (let i = 0; i < jumlah; i++) {
-            const key = generateKey();
-            keys.push(key);
-            batch.set(db.collection('generated_keys').doc(key), {
-                createdBy: msg.author.tag,
-                createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                expiresInDays: isPermanent ? null : hari,
-                status: 'pending'
-            });
+        if (!msg.member?.roles.cache.has(STAFF_ROLE_ID)) {
+            return msg.reply("Hanya staff dengan role khusus!");
         }
 
-        await batch.commit();
+        if (cmd === "panel") {
+            const embed = new EmbedBuilder()
+                .setTitle("Vorahub Premium Panel")
+                .setDescription("This panel is for the project: Vorahub \n\nIf you're a buyer, click on the buttons below to redeem your key, get the script or get your role")
+                .setColor("#7289da")
+                .setThumbnail(client.user.displayAvatarURL())
+                .setTimestamp();
 
-        const embed = new EmbedBuilder()
-            .setTitle("KEYS GENERATED (Pending Redeem)")
-            .setDescription(`\`\`\`${keys.join("\n")}\`\`\``)
-            .addFields(
-                { name: "Total", value: `${keys.length}`, inline: true },
-                { name: "Tipe", value: isPermanent ? "PERMANENT" : `${hari} Hari`, inline: true },
-                { name: "Status", value: "Menunggu redeem", inline: true }
-            )
-            .setColor("#00ff00")
-            .setTimestamp();
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId("redeem_modal").setLabel("Redeem Key").setStyle(ButtonStyle.Primary),
+                new ButtonBuilder().setCustomId("reset_start").setLabel("Reset HWID").setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder().setCustomId("getscript_start").setLabel("Get Script").setStyle(ButtonStyle.Success),
+                new ButtonBuilder().setCustomId("getrole_start").setLabel("Get Role").setStyle(ButtonStyle.Danger)
+            );
 
-        await msg.reply({ embeds: [embed] });
+            const panelMsg = await msg.channel.send({ embeds: [embed], components: [row] });
+            latestPanelMessageId = panelMsg.id;
+            latestPanelChannelId = msg.channel.id;
 
-        if (targetUser) {
-            targetUser.send({ embeds: [embed] }).then(() => {
-                msg.reply(`Key dikirim ke DM ${targetUser.tag}`);
-            }).catch(() => {
-                msg.reply(`Gagal kirim DM ke ${targetUser.tag} (DM ditutup?)`);
-            });
+            const confirm = await msg.reply("Panel berhasil dibuat!");
+            setTimeout(() => confirm.delete().catch(() => { }), 5000);
+            return;
         }
 
-        await logAction("KEYS GENERATED", msg.author.tag, targetUser?.tag || "Channel", "Generate", `Jumlah: ${jumlah}, Permanent: ${isPermanent}`);
-        return;
-    }
+        if (cmd === "gen" || cmd === "generate") {
+            let jumlah = 1;
+            let hari = null;
+            let targetUser = msg.mentions.users.first();
 
-    if (cmd === "listpending") {
-        const snapshot = await db.collection('generated_keys').get();
-        if (snapshot.empty) return msg.reply("Tidak ada key pending.");
+            if (args[0]) jumlah = Math.min(parseInt(args[0]) || 1, 100);
+            if (args[1] && !isNaN(args[1])) hari = parseInt(args[1]);
 
-        const list = snapshot.docs.map(doc => {
-            const d = doc.data();
-            const type = d.expiresInDays == null ? "Permanent" : `${d.expiresInDays} hari`;
-            return `${doc.id} - oleh ${d.createdBy} (${type})`;
-        }).join("\n");
+            const isPermanent = hari === null || hari <= 0;
 
-        return msg.reply({ content: "**Pending Keys:**\n```" + list + "```" });
-    }
+            const batch = db.batch();
+            const keys = [];
+
+            for (let i = 0; i < jumlah; i++) {
+                const key = generateKey();
+                keys.push(key);
+                batch.set(db.collection('generated_keys').doc(key), {
+                    createdBy: msg.author.tag,
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    expiresInDays: isPermanent ? null : hari,
+                    status: 'pending'
+                });
+            }
+
+            await batch.commit();
+
+            const embed = new EmbedBuilder()
+                .setTitle("KEYS GENERATED (Pending Redeem)")
+                .setDescription(`\`\`\`${keys.join("\n")}\`\`\``)
+                .addFields(
+                    { name: "Total", value: `${keys.length}`, inline: true },
+                    { name: "Tipe", value: isPermanent ? "PERMANENT" : `${hari} Hari`, inline: true },
+                    { name: "Status", value: "Menunggu redeem", inline: true }
+                )
+                .setColor("#00ff00")
+                .setTimestamp();
+
+            await msg.reply({ embeds: [embed] });
+
+            if (targetUser) {
+                targetUser.send({ embeds: [embed] }).then(() => {
+                    msg.reply(`Key dikirim ke DM ${targetUser.tag}`);
+                }).catch(() => {
+                    msg.reply(`Gagal kirim DM ke ${targetUser.tag} (DM ditutup?)`);
+                });
+            }
+
+            await logAction("KEYS GENERATED", msg.author.tag, targetUser?.tag || "Channel", "Generate", `Jumlah: ${jumlah}, Permanent: ${isPermanent}`);
+            return;
+        }
+
+        if (cmd === "listpending") {
+            const snapshot = await db.collection('generated_keys').get();
+            if (snapshot.empty) return msg.reply("Tidak ada key pending.");
+
+            const list = snapshot.docs.map(doc => {
+                const d = doc.data();
+                const type = d.expiresInDays == null ? "Permanent" : `${d.expiresInDays} hari`;
+                return `${doc.id} - oleh ${d.createdBy} (${type})`;
+            }).join("\n");
+
+            return msg.reply({ content: "**Pending Keys:**\n```" + list + "```" });
+        }
     } catch (err) {
         console.error('Message handler error:', err);
-        msg.reply('Terjadi error internal.').catch(() => {});
+        msg.reply('Terjadi error internal.').catch(() => { });
     }
 });
 
@@ -533,4 +533,5 @@ if (!process.env.TOKEN) {
     console.error('Missing TOKEN in environment. Bot will not login.');
 } else {
     client.login(process.env.TOKEN).catch(err => console.error('Login error:', err));
+
 }
