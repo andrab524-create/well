@@ -175,22 +175,42 @@ client.once('ready', async () => {
                 .addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true))
             )
             .addSubcommand(sub => sub
-                .setName('bulkremove')
-                .setDescription('Hapus beberapa user sekaligus dari whitelist')
-                .addStringOption(opt => opt.setName('userids').setDescription('User IDs dipisah koma (contoh: 123,456,789)').setRequired(true))
+                .setName('list')
+                .setDescription('Lihat daftar whitelist')
+            ),
+        new SlashCommandBuilder()
+            .setName('blacklist')
+            .setDescription('Kelola blacklist user')
+            .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+            .addSubcommand(sub => sub
+                .setName('add')
+                .setDescription('Tambah user ke blacklist')
+                .addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true))
             )
             .addSubcommand(sub => sub
-                .setName('clear')
-                .setDescription('Hapus SEMUA whitelist (HATI-HATI!)')
+                .setName('remove')
+                .setDescription('Hapus user dari blacklist')
+                .addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true))
             )
             .addSubcommand(sub => sub
                 .setName('list')
-                .setDescription('Lihat daftar whitelist')
+                .setDescription('Lihat daftar blacklist')
+            ),
+        new SlashCommandBuilder()
+            .setName('genkey')
+            .setDescription('Generate keys (permanent)')
+            .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+            .addIntegerOption(opt => opt
+                .setName('amount')
+                .setDescription('Jumlah key yang akan digenerate')
+                .setRequired(true)
+                .setMinValue(1)
+                .setMaxValue(100)
             )
-            .addSubcommand(sub => sub
-                .setName('search')
-                .setDescription('Cari user di whitelist')
-                .addStringOption(opt => opt.setName('query').setDescription('Username atau User ID').setRequired(true))
+            .addUserOption(opt => opt
+                .setName('user')
+                .setDescription('User untuk dikirim DM (opsional)')
+                .setRequired(false)
             )
     ];
 
@@ -261,143 +281,40 @@ client.on('interactionCreate', async (interaction) => {
             if (sub === 'remove') {
                 const targetUser = interaction.options.getUser('user');
                 const targetTag = targetUser.tag;
-                const userId = targetUser.id;
+                const doc = await db.collection('whitelist').doc(targetUser.id).get();
+                if (!doc.exists) return interaction.editReply({ content: `${targetTag} tidak di whitelist!` });
 
-                // Check by User ID first
-                let doc = await db.collection('whitelist').doc(userId).get();
-
-                // If not found by User ID, search by discordTag (for legacy entries)
-                if (!doc.exists) {
-                    const snapshot = await db.collection('whitelist')
-                        .where('discordTag', '==', targetTag)
-                        .limit(1)
-                        .get();
-
-                    if (!snapshot.empty) {
-                        doc = snapshot.docs[0];
-                        // Found by tag, now delete it
-                        await doc.ref.delete();
-                        await logAction("WHITELIST REMOVE", interaction.user.tag, targetTag, "Remove (by tag)", `Old ID: ${doc.id}`);
-                        return interaction.editReply({ content: `✅ Berhasil hapus ${targetTag} dari whitelist (ditemukan via username).` });
-                    }
-
-                    // Still not found, search by userId field
-                    const snapshotById = await db.collection('whitelist')
-                        .where('userId', '==', userId)
-                        .limit(1)
-                        .get();
-
-                    if (!snapshotById.empty) {
-                        doc = snapshotById.docs[0];
-                        await doc.ref.delete();
-                        await logAction("WHITELIST REMOVE", interaction.user.tag, targetTag, "Remove (by userId field)");
-                        return interaction.editReply({ content: `✅ Berhasil hapus ${targetTag} dari whitelist.` });
-                    }
-
-                    // Truly not found
-                    return interaction.editReply({
-                        content: `❌ ${targetTag} (ID: ${userId}) tidak ditemukan di whitelist!\n\nGunakan \`/whitelist search ${targetTag}\` untuk mencari atau \`/whitelist list\` untuk melihat semua.`
-                    });
-                }
-
-                // Found by User ID, delete normally
-                await doc.ref.delete();
-                await logAction("WHITELIST REMOVE", interaction.user.tag, targetTag, "Remove");
-                return interaction.editReply({ content: `✅ Berhasil hapus ${targetTag} dari whitelist.` });
-            }
-
-            if (sub === 'bulkremove') {
-                const userIdsInput = interaction.options.getString('userids');
-                const userIds = userIdsInput.split(',').map(id => id.trim()).filter(id => id.length > 0);
-
-                if (userIds.length === 0) {
-                    return interaction.editReply({ content: "Format salah! Masukkan User IDs dipisah koma." });
-                }
-
+                const whitelistData = doc.data();
                 const batch = db.batch();
-                const removed = [];
-                const notFound = [];
 
-                for (const userId of userIds) {
-                    const doc = await db.collection('whitelist').doc(userId).get();
-                    if (doc.exists) {
-                        batch.delete(doc.ref);
-                        removed.push(`${doc.data().discordTag || userId}`);
-                    } else {
-                        notFound.push(userId);
-                    }
+                // Delete whitelist entry
+                batch.delete(doc.ref);
+
+                // Delete associated key if exists
+                if (whitelistData.key) {
+                    const keyRef = db.collection('keys').doc(whitelistData.key);
+                    batch.delete(keyRef);
                 }
 
-                if (removed.length > 0) {
-                    await batch.commit();
-                    await logAction("BULK WHITELIST REMOVE", interaction.user.tag, removed.join(', '), "Bulk Remove", `Total: ${removed.length}`);
-                }
-
-                let response = '';
-                if (removed.length > 0) response += `✅ Berhasil hapus ${removed.length} user:\n${removed.join(', ')}\n\n`;
-                if (notFound.length > 0) response += `❌ Tidak ditemukan (${notFound.length}): ${notFound.join(', ')}`;
-
-                return interaction.editReply({ content: response || "Tidak ada yang dihapus." });
-            }
-
-            if (sub === 'clear') {
-                const snapshot = await db.collection('whitelist').get();
-                if (snapshot.empty) return interaction.editReply({ content: "Whitelist sudah kosong!" });
-
-                const confirmEmbed = new EmbedBuilder()
-                    .setTitle("⚠️ KONFIRMASI HAPUS SEMUA WHITELIST")
-                    .setDescription(`Kamu akan menghapus **${snapshot.size}** user dari whitelist!\n\nKetik \`CONFIRM DELETE ALL\` untuk melanjutkan atau tunggu 30 detik untuk batal.`)
-                    .setColor("#ff0000")
-                    .setTimestamp();
-
-                await interaction.editReply({ embeds: [confirmEmbed] });
-
-                const filter = m => m.author.id === interaction.user.id && m.content === 'CONFIRM DELETE ALL';
-                const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 30000, errors: ['time'] }).catch(() => null);
-
-                if (!collected) {
-                    return interaction.followUp({ content: "❌ Waktu habis. Pembatalan clear whitelist.", ephemeral: true });
-                }
-
-                const batch = db.batch();
-                snapshot.docs.forEach(doc => batch.delete(doc.ref));
                 await batch.commit();
 
-                await logAction("CLEAR ALL WHITELIST", interaction.user.tag, "ALL USERS", "Clear Whitelist", `Total: ${snapshot.size}`);
-                await collected.first().delete().catch(() => { });
-                return interaction.followUp({ content: `✅ Berhasil menghapus ${snapshot.size} user dari whitelist.`, ephemeral: true });
-            }
-
-            if (sub === 'search') {
-                const query = interaction.options.getString('query').toLowerCase();
-                const snapshot = await db.collection('whitelist').get();
-
-                if (snapshot.empty) return interaction.editReply({ content: "Whitelist kosong!" });
-
-                const results = snapshot.docs.filter(doc => {
-                    const data = doc.data();
-                    return doc.id.toLowerCase().includes(query) ||
-                        (data.discordTag && data.discordTag.toLowerCase().includes(query)) ||
-                        (data.key && data.key.toLowerCase().includes(query));
-                });
-
-                if (results.length === 0) {
-                    return interaction.editReply({ content: `Tidak ditemukan user dengan query: "${query}"` });
+                // Remove premium role if user is in guild
+                if (interaction.guild) {
+                    const member = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
+                    if (member && member.roles.cache.has(PREMIUM_ROLE_ID)) {
+                        await member.roles.remove(PREMIUM_ROLE_ID);
+                        await logAction("ROLE REMOVED", interaction.user.tag, targetTag, "Auto Role Remove (Whitelist)");
+                    }
                 }
 
-                const list = results.map(doc => {
-                    const d = doc.data();
-                    return `• **${d.discordTag}** (ID: ${doc.id})\n  Key: \`${d.key || "No Key"}\`\n  Added by: ${d.addedBy || "Unknown"}`;
-                }).join('\n\n');
+                // Send notification to user
+                await interaction.channel.send(`<@${targetUser.id}> You have been Removed! :grey_heart: \nTo find out why, go to\n${WHITELIST_SCRIPT_LINK} and click on **Redeem** button`);
 
-                const embed = new EmbedBuilder()
-                    .setTitle(`🔍 Hasil Pencarian: "${query}"`)
-                    .setDescription(list)
-                    .setColor("#00ff00")
-                    .setFooter({ text: `Ditemukan: ${results.length} user` })
-                    .setTimestamp();
+                // Invalidate cache
+                userKeyCache.delete(targetUser.id);
 
-                return interaction.editReply({ embeds: [embed] });
+                await logAction("WHITELIST REMOVE", interaction.user.tag, targetTag, "Remove");
+                return interaction.editReply({ content: `Berhasil hapus ${targetTag} dari whitelist + role dihapus.` });
             }
 
             if (sub === 'list') {
@@ -417,6 +334,160 @@ client.on('interactionCreate', async (interaction) => {
                     .setTimestamp();
 
                 return interaction.editReply({ embeds: [embed] });
+            }
+        }
+
+        // Slash Command: /blacklist
+        if (interaction.isChatInputCommand() && interaction.commandName === 'blacklist') {
+            if (!interaction.member.roles.cache.has(STAFF_ROLE_ID)) {
+                return interaction.reply({ content: "Hanya staff dengan role khusus!", ephemeral: true });
+            }
+
+            await interaction.deferReply({ ephemeral: true });
+            const sub = interaction.options.getSubcommand();
+
+            if (sub === 'add') {
+                const targetUser = interaction.options.getUser('user');
+                const targetTag = targetUser.tag;
+                const blacklistRef = db.collection('blacklist').doc(targetUser.id);
+
+                if ((await blacklistRef.get()).exists) {
+                    return interaction.editReply({ content: `${targetTag} sudah di blacklist!` });
+                }
+
+                const batch = db.batch();
+
+                // Add to blacklist
+                batch.set(blacklistRef, {
+                    userId: targetUser.id,
+                    discordTag: targetTag,
+                    addedBy: interaction.user.tag,
+                    addedAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+
+                // Remove from whitelist if exists
+                const whitelistDoc = await db.collection('whitelist').doc(targetUser.id).get();
+                if (whitelistDoc.exists) {
+                    const whitelistData = whitelistDoc.data();
+                    batch.delete(whitelistDoc.ref);
+
+                    // Delete associated key
+                    if (whitelistData.key) {
+                        batch.delete(db.collection('keys').doc(whitelistData.key));
+                    }
+                }
+
+                // Delete all user's keys
+                const userKeys = await getUserActiveKeys(targetUser.id, targetTag);
+                for (const key of userKeys) {
+                    batch.delete(db.collection('keys').doc(key));
+                }
+
+                await batch.commit();
+
+                await logAction("BLACKLIST ADD", interaction.user.tag, targetTag, "Blacklist Add");
+
+                // Remove premium role if user is in guild
+                if (interaction.guild) {
+                    const member = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
+                    if (member && member.roles.cache.has(PREMIUM_ROLE_ID)) {
+                        await member.roles.remove(PREMIUM_ROLE_ID);
+                        await logAction("ROLE REMOVED", interaction.user.tag, targetTag, "Auto Role Remove (Blacklist)");
+                    }
+                }
+
+                // Send notification to user
+                await interaction.channel.send(`<@${targetUser.id}> You have been Blacklist! :heart: \nTo find out why, go to\n${WHITELIST_SCRIPT_LINK} and click on **Redeem** button`);
+
+                // Invalidate cache
+                userKeyCache.delete(targetUser.id);
+
+                return interaction.editReply({ content: `Sukses blacklist ${targetTag} + semua key dan role dihapus.` });
+            }
+
+            if (sub === 'remove') {
+                const targetUser = interaction.options.getUser('user');
+                const targetTag = targetUser.tag;
+                const doc = await db.collection('blacklist').doc(targetUser.id).get();
+                if (!doc.exists) return interaction.editReply({ content: `${targetTag} tidak di blacklist!` });
+
+                await doc.ref.delete();
+                await logAction("BLACKLIST REMOVE", interaction.user.tag, targetTag, "Remove from Blacklist");
+                return interaction.editReply({ content: `Berhasil hapus ${targetTag} dari blacklist.` });
+            }
+
+            if (sub === 'list') {
+                const snapshot = await db.collection('blacklist').get();
+                if (snapshot.empty) return interaction.editReply({ content: "Blacklist kosong!" });
+
+                const list = snapshot.docs.map(doc => {
+                    const d = doc.data();
+                    return `• **${d.discordTag}** → Added by ${d.addedBy}`;
+                }).join('\n');
+
+                const embed = new EmbedBuilder()
+                    .setTitle("BLACKLIST LIST")
+                    .setDescription(list || "Kosong")
+                    .setColor("#ff0000")
+                    .setFooter({ text: `Total: ${snapshot.size}` })
+                    .setTimestamp();
+
+                return interaction.editReply({ embeds: [embed] });
+            }
+        }
+
+        // Slash Command: /genkey
+        if (interaction.isChatInputCommand() && interaction.commandName === 'genkey') {
+            if (!interaction.member.roles.cache.has(STAFF_ROLE_ID)) {
+                return interaction.reply({ content: "Hanya staff dengan role khusus!", ephemeral: true });
+            }
+
+            await interaction.deferReply({ ephemeral: true });
+
+            const amount = interaction.options.getInteger('amount');
+            const targetUser = interaction.options.getUser('user');
+
+            const batch = db.batch();
+            const keys = [];
+
+            for (let i = 0; i < amount; i++) {
+                const key = generateKey();
+                keys.push(key);
+                batch.set(db.collection('generated_keys').doc(key), {
+                    createdBy: interaction.user.tag,
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    expiresInDays: null, // Permanent
+                    status: 'pending'
+                });
+            }
+
+            await batch.commit();
+
+            const embed = new EmbedBuilder()
+                .setTitle("KEYS GENERATED (Pending Redeem)")
+                .setDescription(`\`\`\`${keys.join("\n")}\`\`\``)
+                .addFields(
+                    { name: "Total", value: `${keys.length}`, inline: true },
+                    { name: "Tipe", value: "PERMANENT", inline: true },
+                    { name: "Status", value: "Menunggu redeem", inline: true }
+                )
+                .setColor("#00ff00")
+                .setTimestamp();
+
+            // Send to user DM if specified, otherwise to channel
+            if (targetUser) {
+                try {
+                    await targetUser.send({ embeds: [embed] });
+                    await logAction("KEYS GENERATED", interaction.user.tag, targetUser.tag, "Generate (DM)", `Jumlah: ${amount}, Permanent: true`);
+                    return interaction.editReply({ content: `✅ ${amount} key berhasil digenerate dan dikirim ke DM ${targetUser.tag}!`, embeds: [embed] });
+                } catch (err) {
+                    await logAction("KEYS GENERATED", interaction.user.tag, targetUser.tag, "Generate (DM Failed)", `Jumlah: ${amount}, Permanent: true`);
+                    return interaction.editReply({ content: `⚠️ ${amount} key berhasil digenerate tapi gagal kirim DM ke ${targetUser.tag} (DM ditutup?). Keys:`, embeds: [embed] });
+                }
+            } else {
+                await interaction.channel.send({ embeds: [embed] });
+                await logAction("KEYS GENERATED", interaction.user.tag, "Channel", "Generate", `Jumlah: ${amount}, Permanent: true`);
+                return interaction.editReply({ content: `✅ ${amount} key berhasil digenerate dan dikirim ke channel!` });
             }
         }
 
