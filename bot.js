@@ -211,11 +211,20 @@ client.once('ready', async () => {
                 .setName('user')
                 .setDescription('User untuk dikirim DM (opsional)')
                 .setRequired(false)
+            ),
+        new SlashCommandBuilder()
+            .setName('removekey')
+            .setDescription('Hapus key user (termasuk yang dari redeem)')
+            .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+            .addUserOption(opt => opt
+                .setName('user')
+                .setDescription('User yang keynya akan dihapus')
+                .setRequired(true)
             )
     ];
 
     await client.application.commands.set(commands);
-    console.log("Slash commands registered!");
+    console.log("Slash commands registered! well");
 });
 
 // =============== SATU INTERACTION HANDLER SAJA (lebih cepat) ===============
@@ -489,6 +498,58 @@ client.on('interactionCreate', async (interaction) => {
                 await logAction("KEYS GENERATED", interaction.user.tag, "Channel", "Generate", `Jumlah: ${amount}, Permanent: true`);
                 return interaction.editReply({ content: `✅ ${amount} key berhasil digenerate dan dikirim ke channel!` });
             }
+        }
+
+        // Slash Command: /removekey
+        if (interaction.isChatInputCommand() && interaction.commandName === 'removekey') {
+            if (!interaction.member.roles.cache.has(STAFF_ROLE_ID)) {
+                return interaction.reply({ content: "Hanya staff dengan role khusus!", ephemeral: true });
+            }
+
+            await interaction.deferReply({ ephemeral: true });
+
+            const targetUser = interaction.options.getUser('user');
+            const targetTag = targetUser.tag;
+
+            // Get all user's keys (both from whitelist and redeemed)
+            const userKeys = await getUserActiveKeys(targetUser.id, targetTag);
+
+            if (userKeys.length === 0) {
+                return interaction.editReply({ content: `${targetTag} tidak memiliki key aktif!` });
+            }
+
+            const batch = db.batch();
+
+            // Delete all keys from 'keys' collection
+            for (const key of userKeys) {
+                batch.delete(db.collection('keys').doc(key));
+            }
+
+            // Remove from whitelist if exists
+            const whitelistDoc = await db.collection('whitelist').doc(targetUser.id).get();
+            if (whitelistDoc.exists) {
+                batch.delete(whitelistDoc.ref);
+            }
+
+            await batch.commit();
+
+            // Remove premium role if user is in guild
+            if (interaction.guild) {
+                const member = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
+                if (member && member.roles.cache.has(PREMIUM_ROLE_ID)) {
+                    await member.roles.remove(PREMIUM_ROLE_ID);
+                    await logAction("ROLE REMOVED", interaction.user.tag, targetTag, "Auto Role Remove (Key Removal)");
+                }
+            }
+
+            // Send notification to user
+            await interaction.channel.send(`<@${targetUser.id}> You have been Removed! :grey_heart: \nTo find out why, go to\n${WHITELIST_SCRIPT_LINK} and click on **Redeem** button`);
+
+            // Invalidate cache
+            userKeyCache.delete(targetUser.id);
+
+            await logAction("KEYS REMOVED", interaction.user.tag, targetTag, "Remove All Keys", `Total keys deleted: ${userKeys.length}`);
+            return interaction.editReply({ content: `✅ Berhasil hapus ${userKeys.length} key dari ${targetTag} + role dihapus.` });
         }
 
         // Button / Modal / Select Menu
