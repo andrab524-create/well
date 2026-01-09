@@ -175,8 +175,22 @@ client.once('ready', async () => {
                 .addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true))
             )
             .addSubcommand(sub => sub
+                .setName('bulkremove')
+                .setDescription('Hapus beberapa user sekaligus dari whitelist')
+                .addStringOption(opt => opt.setName('userids').setDescription('User IDs dipisah koma (contoh: 123,456,789)').setRequired(true))
+            )
+            .addSubcommand(sub => sub
+                .setName('clear')
+                .setDescription('Hapus SEMUA whitelist (HATI-HATI!)')
+            )
+            .addSubcommand(sub => sub
                 .setName('list')
                 .setDescription('Lihat daftar whitelist')
+            )
+            .addSubcommand(sub => sub
+                .setName('search')
+                .setDescription('Cari user di whitelist')
+                .addStringOption(opt => opt.setName('query').setDescription('Username atau User ID').setRequired(true))
             )
     ];
 
@@ -253,6 +267,100 @@ client.on('interactionCreate', async (interaction) => {
                 await doc.ref.delete();
                 await logAction("WHITELIST REMOVE", interaction.user.tag, targetTag, "Remove");
                 return interaction.editReply({ content: `Berhasil hapus ${targetTag} dari whitelist.` });
+            }
+
+            if (sub === 'bulkremove') {
+                const userIdsInput = interaction.options.getString('userids');
+                const userIds = userIdsInput.split(',').map(id => id.trim()).filter(id => id.length > 0);
+
+                if (userIds.length === 0) {
+                    return interaction.editReply({ content: "Format salah! Masukkan User IDs dipisah koma." });
+                }
+
+                const batch = db.batch();
+                const removed = [];
+                const notFound = [];
+
+                for (const userId of userIds) {
+                    const doc = await db.collection('whitelist').doc(userId).get();
+                    if (doc.exists) {
+                        batch.delete(doc.ref);
+                        removed.push(`${doc.data().discordTag || userId}`);
+                    } else {
+                        notFound.push(userId);
+                    }
+                }
+
+                if (removed.length > 0) {
+                    await batch.commit();
+                    await logAction("BULK WHITELIST REMOVE", interaction.user.tag, removed.join(', '), "Bulk Remove", `Total: ${removed.length}`);
+                }
+
+                let response = '';
+                if (removed.length > 0) response += `✅ Berhasil hapus ${removed.length} user:\n${removed.join(', ')}\n\n`;
+                if (notFound.length > 0) response += `❌ Tidak ditemukan (${notFound.length}): ${notFound.join(', ')}`;
+
+                return interaction.editReply({ content: response || "Tidak ada yang dihapus." });
+            }
+
+            if (sub === 'clear') {
+                const snapshot = await db.collection('whitelist').get();
+                if (snapshot.empty) return interaction.editReply({ content: "Whitelist sudah kosong!" });
+
+                const confirmEmbed = new EmbedBuilder()
+                    .setTitle("⚠️ KONFIRMASI HAPUS SEMUA WHITELIST")
+                    .setDescription(`Kamu akan menghapus **${snapshot.size}** user dari whitelist!\n\nKetik \`CONFIRM DELETE ALL\` untuk melanjutkan atau tunggu 30 detik untuk batal.`)
+                    .setColor("#ff0000")
+                    .setTimestamp();
+
+                await interaction.editReply({ embeds: [confirmEmbed] });
+
+                const filter = m => m.author.id === interaction.user.id && m.content === 'CONFIRM DELETE ALL';
+                const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 30000, errors: ['time'] }).catch(() => null);
+
+                if (!collected) {
+                    return interaction.followUp({ content: "❌ Waktu habis. Pembatalan clear whitelist.", ephemeral: true });
+                }
+
+                const batch = db.batch();
+                snapshot.docs.forEach(doc => batch.delete(doc.ref));
+                await batch.commit();
+
+                await logAction("CLEAR ALL WHITELIST", interaction.user.tag, "ALL USERS", "Clear Whitelist", `Total: ${snapshot.size}`);
+                await collected.first().delete().catch(() => { });
+                return interaction.followUp({ content: `✅ Berhasil menghapus ${snapshot.size} user dari whitelist.`, ephemeral: true });
+            }
+
+            if (sub === 'search') {
+                const query = interaction.options.getString('query').toLowerCase();
+                const snapshot = await db.collection('whitelist').get();
+
+                if (snapshot.empty) return interaction.editReply({ content: "Whitelist kosong!" });
+
+                const results = snapshot.docs.filter(doc => {
+                    const data = doc.data();
+                    return doc.id.toLowerCase().includes(query) ||
+                        (data.discordTag && data.discordTag.toLowerCase().includes(query)) ||
+                        (data.key && data.key.toLowerCase().includes(query));
+                });
+
+                if (results.length === 0) {
+                    return interaction.editReply({ content: `Tidak ditemukan user dengan query: "${query}"` });
+                }
+
+                const list = results.map(doc => {
+                    const d = doc.data();
+                    return `• **${d.discordTag}** (ID: ${doc.id})\n  Key: \`${d.key || "No Key"}\`\n  Added by: ${d.addedBy || "Unknown"}`;
+                }).join('\n\n');
+
+                const embed = new EmbedBuilder()
+                    .setTitle(`🔍 Hasil Pencarian: "${query}"`)
+                    .setDescription(list)
+                    .setColor("#00ff00")
+                    .setFooter({ text: `Ditemukan: ${results.length} user` })
+                    .setTimestamp();
+
+                return interaction.editReply({ embeds: [embed] });
             }
 
             if (sub === 'list') {
