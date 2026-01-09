@@ -42,7 +42,7 @@ const PREFIX = "!";
 const WEBHOOK_URL = process.env.WEBHOOK;
 const webhook = WEBHOOK_URL ? new WebhookClient({ url: WEBHOOK_URL }) : null;
 const KEY_PREFIX = "VORAHUB";
-const SCRIPT_URL = "vorahub.xyz/loader";
+const SCRIPT_URL = "https://vorahub.xyz/loader";
 const PREMIUM_ROLE_ID = "1434842978932752405";
 const STAFF_ROLE_ID = "1452500424551567360";
 const WHITELIST_SCRIPT_LINK = "https://discord.com/channels/1434540370284384338/1434755316808941718/1452153375260020888";
@@ -834,4 +834,5 @@ if (!process.env.TOKEN) {
     client.login(process.env.TOKEN).catch(err => console.error('Login error:', err));
 
 }
+
 
