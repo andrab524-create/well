@@ -240,7 +240,7 @@ client.once('ready', async () => {
     ];
 
     await client.application.commands.set(commands);
-    console.log("Slash commands registered!");
+    console.log("Slash commands REGIS!");
 });
 
 // =============== SATU INTERACTION HANDLER SAJA (lebih cepat) ===============
@@ -931,3 +931,4 @@ if (!process.env.TOKEN) {
     client.login(process.env.TOKEN).catch(err => console.error('Login error:', err));
 
 }
+
