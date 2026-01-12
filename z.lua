@@ -57,7 +57,9 @@ local HasShownSaveWarning = false
 -- Create config folder if not exists
 if not isfolder(ConfigFolder) then
 	makefolder(ConfigFolder)
+    print("Created config folder: " .. ConfigFolder)
 end
+print("Config Folder Path: " .. ConfigFolder)
 
 local function getConfigList()
 	local configs = {}
@@ -67,8 +69,9 @@ local function getConfigList()
 	
 	if success and files then
 		for _, file in ipairs(files) do
-			local name = file:gsub(ConfigFolder .. "\\", ""):gsub(".json", "")
-			if name ~= "" then
+            -- Handle both slash types and extract just the filename
+			local name = file:match("([^/\\]+)%.json$")
+			if name then
 				table.insert(configs, name)
 			end
 		end
@@ -117,7 +120,14 @@ local function saveConfigWithName(configName)
 		end
 		
 		local jsonData = HttpService:JSONEncode(cleanData)
-		local filePath = ConfigFolder .. "\\" .. configName .. ".json"
+		local filePath = ConfigFolder .. "/" .. configName .. ".json"
+		print("[Config] Saving to: " .. filePath) -- Debug print
+        
+        -- Ensure folder exists again just in case
+        if not isfolder(ConfigFolder) then
+            makefolder(ConfigFolder)
+        end
+        
 		writefile(filePath, jsonData)
 		LastSaveTime = tick()
 	end)
@@ -135,7 +145,7 @@ local function loadConfigByName(configName)
 		return false, "Config name cannot be empty"
 	end
 	
-	local filePath = ConfigFolder .. "\\" .. configName .. ".json"
+	local filePath = ConfigFolder .. "/" .. configName .. ".json"
 	
 	if not isfile(filePath) then
 		return false, "Config file does not exist"
@@ -164,7 +174,7 @@ local function deleteConfig(configName)
 		return false, "Config name cannot be empty"
 	end
 	
-	local filePath = ConfigFolder .. "\\" .. configName .. ".json"
+	local filePath = ConfigFolder .. "/" .. configName .. ".json"
 	
 	if not isfile(filePath) then
 		return false, "Config file does not exist"
