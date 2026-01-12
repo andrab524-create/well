@@ -91,11 +91,13 @@ local function saveConfigWithName(configName)
 	local success, err = pcall(function()
 		-- Create a clean copy of ConfigData to avoid circular references
 		local cleanData = {}
+		local count = 0
 		for key, value in pairs(ConfigData) do
 			-- Only save simple types (string, number, boolean, table)
 			local valueType = type(value)
 			if valueType == "string" or valueType == "number" or valueType == "boolean" then
 				cleanData[key] = value
+				count = count + 1
 			elseif valueType == "table" then
 				-- Deep copy tables to avoid references
 				local tableCopy = {}
@@ -105,7 +107,13 @@ local function saveConfigWithName(configName)
 					end
 				end
 				cleanData[key] = tableCopy
+				count = count + 1
 			end
+		end
+		
+		-- Warn if saving empty data, but still save
+		if count == 0 then
+			warn("[Config] Warning: Config data is empty!")
 		end
 		
 		local jsonData = HttpService:JSONEncode(cleanData)
@@ -8934,7 +8942,7 @@ configDropdown = ConfigTab:CreateDropdown({
 	end
 })
 
-ConfigTab:CreateInput({
+local configNameInputObject = ConfigTab:CreateInput({
 	Name = "Config Name",
 	SideLabel = "Name",
 	Placeholder = "Enter config name...",
@@ -8949,6 +8957,14 @@ ConfigTab:CreateButton({
 	SubText = "Save current settings (Manual save only)",
 	Icon = "rbxassetid://7734068321",
 	Callback = function()
+        -- Fallback to selected config if input is empty
+        if configNameInput == "" and selectedConfigToLoad ~= "" then
+            configNameInput = selectedConfigToLoad
+            if configNameInputObject then
+                configNameInputObject:Set(configNameInput)
+            end
+        end
+
 		if configNameInput == "" then
 			Window:Notify({
 				Title = "Error",
@@ -8979,6 +8995,9 @@ ConfigTab:CreateButton({
 				Duration = 3
 			})
 			configNameInput = sanitizedName
+            if configNameInputObject then
+                configNameInputObject:Set(configNameInput)
+            end
 		end
 		
 		-- Collect current values from all UI elements before saving
@@ -9052,6 +9071,12 @@ ConfigTab:CreateButton({
 		
 		local success, err = loadConfigByName(selectedConfigToLoad)
 		if success then
+            -- Update config name input to match loaded config
+            configNameInput = selectedConfigToLoad
+            if configNameInputObject then
+                configNameInputObject:Set(selectedConfigToLoad)
+            end
+
 			-- Apply loaded config settings to UI elements
 			if Window and Window.Elements then
 				local loadedCount = 0
