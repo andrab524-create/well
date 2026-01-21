@@ -26,7 +26,7 @@ const db = admin.firestore();
 // Cache untuk user keys (expire tiap 5 menit untuk update lebih cepat)
 const userKeyCache = new Collection();
 const cooldowns = new Collection();
-const CACHE_DURATION = 300000; // 5 menit (dikurangi dari 10 menit)
+const CACHE_DURATION = 60000; // 1 menit - lebih cepat update
 
 const client = new Client({
     intents: [
@@ -58,21 +58,18 @@ function generateKey() {
 }
 
 // Helper: dapatkan key aktif user dari cache atau Firestore
-// FIXED: Dengan validasi expiry yang lebih baik dan auto-fix untuk whitelist key
 async function getUserActiveKeys(userId, discordTag) {
+    // Skip cache jika forceRefresh
     const cached = userKeyCache.get(userId);
-    if (cached && cached.expires > Date.now()) {
-        console.log(`[CACHE HIT] User ${userId} - ${cached.keys.length} keys`);
-        return cached.keys;
-    }
+    if (cached && cached.expires > Date.now()) return cached.keys;
 
-    console.log(`[CACHE MISS] Fetching keys for user ${userId}`);
+    const username = discordTag.includes('#') ? discordTag.split('#')[0] : discordTag;
 
-    // Query dari 3 sumber untuk memastikan semua key terdeteksi
-    const [snapshotId, snapshotTag, whitelistDoc] = await Promise.all([
+    const [snapshotId, snapshotTag, snapshotUsername, whitelistDoc] = await Promise.all([
         db.collection('keys').where('userId', '==', userId).get(),
         db.collection('keys').where('usedByDiscord', '==', discordTag).get(),
-        db.collection('whitelist').doc(userId).get() // CEK WHITELIST LANGSUNG
+        db.collection('keys').where('usedByDiscord', '==', username).get(),
+        db.collection('whitelist').doc(userId).get()
     ]);
 
     const keys = new Set();
@@ -80,137 +77,70 @@ async function getUserActiveKeys(userId, discordTag) {
     let batchCount = 0;
     const now = Date.now();
 
-    // Process keys found by userId
-    snapshotId.forEach(doc => {
+    const processKey = (doc) => {
         const data = doc.data();
+        const keyId = doc.id;
+        if (keys.has(keyId)) return;
 
-        // PERBAIKAN: Whitelist key (expiresAt = null) tidak boleh difilter
-        if (data.whitelisted || data.expiresAt === null) {
-            console.log(`[WHITELIST KEY] ${doc.id} - permanent key`);
-            keys.add(doc.id);
+        // Permanent/whitelist key
+        if (data.whitelisted || data.expiresAt === null || data.expiresAt === undefined) {
+            keys.add(keyId);
+            const updates = {};
+            if (!data.userId) updates.userId = userId;
+            if (!data.usedByDiscord) updates.usedByDiscord = discordTag;
+            if (Object.keys(updates).length > 0) { batch.update(doc.ref, updates); batchCount++; }
             return;
         }
 
-        // Validasi expiry hanya untuk non-whitelist key
-        if (data.expiresAt && data.expiresAt.toMillis() < now) {
-            console.log(`[EXPIRED KEY] ${doc.id} - expired at ${new Date(data.expiresAt.toMillis())}`);
-            return;
-        }
+        // Check expiry
+        try {
+            const expiryTime = data.expiresAt?.toMillis ? data.expiresAt.toMillis() : data.expiresAt;
+            if (expiryTime && expiryTime < now) return;
+        } catch (e) { }
 
-        keys.add(doc.id);
-    });
+        keys.add(keyId);
+        const updates = {};
+        if (!data.userId) updates.userId = userId;
+        if (!data.usedByDiscord) updates.usedByDiscord = discordTag;
+        if (Object.keys(updates).length > 0) { batch.update(doc.ref, updates); batchCount++; }
+    };
 
-    // Process keys found by discordTag
-    snapshotTag.forEach(doc => {
-        const data = doc.data();
+    snapshotId.forEach(doc => processKey(doc));
+    snapshotTag.forEach(doc => processKey(doc));
+    snapshotUsername.forEach(doc => processKey(doc));
 
-        // PERBAIKAN: Whitelist key tidak boleh difilter
-        if (data.whitelisted || data.expiresAt === null) {
-            console.log(`[WHITELIST KEY] ${doc.id} - permanent key`);
-            keys.add(doc.id);
-
-            if (!data.userId) {
-                batch.update(doc.ref, { userId: userId });
-                batchCount++;
-                console.log(`[AUTO-MIGRATION] Adding userId to key ${doc.id}`);
-            }
-            return;
-        }
-
-        // Validasi expiry hanya untuk non-whitelist key
-        if (data.expiresAt && data.expiresAt.toMillis() < now) {
-            console.log(`[EXPIRED KEY] ${doc.id} - expired at ${new Date(data.expiresAt.toMillis())}`);
-            return;
-        }
-
-        keys.add(doc.id);
-
-        if (!data.userId) {
-            batch.update(doc.ref, { userId: userId });
-            batchCount++;
-            console.log(`[AUTO-MIGRATION] Adding userId to key ${doc.id}`);
-        }
-    });
-
-    // PERBAIKAN: Cek whitelist secara langsung
+    // Whitelist direct check
     if (whitelistDoc.exists) {
         const whitelistData = whitelistDoc.data();
-        if (whitelistData.key) {
-            console.log(`[WHITELIST DIRECT] Adding key from whitelist doc: ${whitelistData.key}`);
+        if (whitelistData.key && !keys.has(whitelistData.key)) {
             keys.add(whitelistData.key);
-
-            // Verifikasi key ini ada di collection 'keys'
             const keyDoc = await db.collection('keys').doc(whitelistData.key).get();
             if (!keyDoc.exists) {
-                console.error(`[ERROR] Whitelist key ${whitelistData.key} tidak ditemukan di collection 'keys'!`);
-                // Auto-fix: Recreate key
                 batch.set(db.collection('keys').doc(whitelistData.key), {
-                    used: false,
-                    alreadyRedeem: true,
-                    userId: userId,
-                    usedByDiscord: discordTag, // TAMBAHKAN FIELD INI
-                    hwid: "",
-                    hwidLimit: 1,
+                    used: false, alreadyRedeem: true, userId, usedByDiscord: discordTag,
+                    hwid: "", hwidLimit: 1,
                     usedAt: admin.firestore.FieldValue.serverTimestamp(),
-                    expiresAt: null,
-                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    expiresAt: null, createdAt: admin.firestore.FieldValue.serverTimestamp(),
                     whitelisted: true
                 });
                 batchCount++;
-                console.log(`[AUTO-FIX] Recreating missing whitelist key ${whitelistData.key}`);
             } else {
-                // Pastikan key memiliki userId dan usedByDiscord
                 const keyData = keyDoc.data();
                 const updates = {};
                 if (!keyData.userId) updates.userId = userId;
                 if (!keyData.usedByDiscord) updates.usedByDiscord = discordTag;
                 if (!keyData.whitelisted) updates.whitelisted = true;
-
-                if (Object.keys(updates).length > 0) {
-                    batch.update(keyDoc.ref, updates);
-                    batchCount++;
-                    console.log(`[AUTO-FIX] Updating whitelist key ${whitelistData.key} with missing fields`);
-                }
+                if (Object.keys(updates).length > 0) { batch.update(keyDoc.ref, updates); batchCount++; }
             }
         }
     }
 
-    // Run migration with retry mechanism
-    if (batchCount > 0) {
-        const maxRetries = 3;
-        let retryCount = 0;
-
-        const attemptMigration = async () => {
-            try {
-                await batch.commit();
-                console.log(`[AUTO-MIGRATION SUCCESS] Updated ${batchCount} keys for user ${userId}`);
-            } catch (e) {
-                retryCount++;
-                console.error(`[AUTO-MIGRATION FAILED] Attempt ${retryCount}/${maxRetries}:`, e);
-
-                if (retryCount < maxRetries) {
-                    setTimeout(() => attemptMigration(), 1000 * retryCount);
-                } else {
-                    console.error(`[AUTO-MIGRATION FAILED] All retries exhausted for user ${userId}`);
-                    if (webhook) {
-                        webhook.send({ content: `⚠️ Auto-migration failed for user ${userId} after ${maxRetries} attempts` }).catch(() => { });
-                    }
-                }
-            }
-        };
-
-        attemptMigration();
-    }
+    if (batchCount > 0) { try { await batch.commit(); } catch (e) { } }
 
     const result = Array.from(keys);
-    console.log(`[KEY FETCH] User ${userId} has ${result.length} active keys`);
+    console.log(`[KEYS] ${discordTag} → ${result.length} keys`);
 
-    // Cache dengan durasi lebih pendek untuk update lebih cepat
-    userKeyCache.set(userId, {
-        keys: result,
-        expires: Date.now() + CACHE_DURATION
-    });
-
+    userKeyCache.set(userId, { keys: result, expires: Date.now() + CACHE_DURATION });
     return result;
 }
 
@@ -274,6 +204,14 @@ client.on('shardError', (err) => console.error('Shard error:', err));
 client.once('ready', async () => {
     console.log(`Bot ${client.user.tag} online & optimized!`);
     client.user.setActivity('Vorahub On Top', { type: 4 });
+
+    // Log total keys dari database
+    const [keysSnap, whitelistSnap] = await Promise.all([
+        db.collection('keys').get(),
+        db.collection('whitelist').get()
+    ]);
+    console.log(`[DATABASE] Total Keys: ${keysSnap.size} | Whitelist: ${whitelistSnap.size}`);
+
 
     const commands = [
         new SlashCommandBuilder()
@@ -365,7 +303,7 @@ client.once('ready', async () => {
     ];
 
     await client.application.commands.set(commands);
-    console.log("Slash x registered!");
+    console.log("Slash  registered!");
 });
 
 // =============== INTERACTION HANDLER ===============
