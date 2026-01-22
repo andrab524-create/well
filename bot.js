@@ -521,7 +521,7 @@ client.once('ready', async () => {
     console.log(`✅ Bot ${client.user.tag} is ONLINE and OPTIMIZED!`);
     console.log(`📊 Serving ${client.guilds.cache.size} guilds with ${client.users.cache.size} users`);
 
-    client.user.setActivity('Vorahub On Top | Optimized', { type: 4 });
+    client.user.setActivity('Vorahub On Top!!', { type: 4 });
 
     // Log database stats
     try {
@@ -1820,11 +1820,9 @@ client.on('messageCreate', async (msg) => {
         // ========== !panel ==========
         if (cmd === "panel") {
             const embed = new EmbedBuilder()
-                .setTitle("🎮 Vorahub Premium Panel")
+                .setTitle("Vorahub Premium Panel")
                 .setDescription("This panel is for the project: **Vorahub**\n\nIf you're a buyer, click on the buttons below to:\n• Redeem your key\n• Reset your HWID\n• Get the script\n• Get your role")
                 .setColor("#7289da")
-                .setThumbnail(client.user.displayAvatarURL())
-                .setFooter({ text: "Vorahub On Top" })
                 .setTimestamp();
 
             const row = new ActionRowBuilder().addComponents(
@@ -1842,7 +1840,7 @@ client.on('messageCreate', async (msg) => {
                     .setStyle(ButtonStyle.Success),
                 new ButtonBuilder()
                     .setCustomId("getrole_start")
-                    .setLabel("👑 Get Role")
+                    .setLabel("🎖️ Get Role")
                     .setStyle(ButtonStyle.Danger)
             );
 
